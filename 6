@@ -1,0 +1,316 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+
+local lp = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local pgui = lp:WaitForChild("PlayerGui")
+
+-- --- 1. 拦截摔伤 (可选) ---
+local mt = getrawmetatable(game)
+local old = mt.__namecall
+setreadonly(mt, false)
+mt.__namecall = newcclosure(function(self, ...)
+    if getnamecallmethod() == "FireServer" and tostring(self) == "ForceSelfDamage" then
+        return nil
+    end
+    return old(self, ...)
+end)
+setreadonly(mt, true)
+
+-- --- UI 构建 ---
+if pgui:FindFirstChild("QiuRong_Silk_V15") then pgui.QiuRong_Silk_V15:Destroy() end
+local ScreenGui = Instance.new("ScreenGui", pgui)
+ScreenGui.Name = "QiuRong_Silk_V15"
+ScreenGui.ResetOnSpawn = false
+
+local MainFrame = Instance.new("Frame", ScreenGui)
+MainFrame.Size = UDim2.new(0, 180, 0, 140)
+MainFrame.Position = UDim2.new(0.5, -90, 0.4, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+MainFrame.BorderSizePixel = 0
+MainFrame.ClipsDescendants = true
+local UICorner = Instance.new("UICorner", MainFrame)
+UICorner.CornerRadius = UDim.new(0, 15)
+
+local Title = Instance.new("TextLabel", MainFrame)
+Title.Size = UDim2.new(1, 0, 0, 30)
+Title.BackgroundTransparency = 1
+Title.Text = "官方"
+Title.TextColor3 = Color3.new(0.8, 0.8, 0.8)
+Title.TextSize = 12
+
+local SpeedInput = Instance.new("TextBox", MainFrame)
+SpeedInput.Size = UDim2.new(0, 140, 0, 30); SpeedInput.Position = UDim2.new(0.5, -70, 0, 40)
+SpeedInput.BackgroundColor3 = Color3.fromRGB(40, 40, 40); SpeedInput.Text = "35"
+SpeedInput.TextColor3 = Color3.new(1, 1, 1); Instance.new("UICorner", SpeedInput).CornerRadius = UDim.new(0, 8)
+
+local Toggle = Instance.new("TextButton", MainFrame)
+Toggle.Size = UDim2.new(0, 140, 0, 40); Toggle.Position = UDim2.new(0.5, -70, 0, 85)
+Toggle.BackgroundColor3 = Color3.fromRGB(60, 60, 60); Toggle.Text = "纯坐标飞行: OFF"
+Toggle.TextColor3 = Color3.new(1, 1, 1); Instance.new("UICorner", Toggle).CornerRadius = UDim.new(0, 10)
+
+-- 拖动逻辑
+local dragging, dragInput, dragStart, startPos
+local function update(input)
+    local delta = input.Position - dragStart
+    MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+
+MainFrame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+
+MainFrame.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then update(input) end
+end)
+
+-- ================= 移动摇杆 =================
+-- 摇杆状态
+local joystickActive = false
+local joystickVector = Vector3.new()  -- 输出方向(X=左右, Y=上下升降)
+
+-- 摇杆UI (默认隐藏, 放屏幕下方, 只做视觉, 触摸区域靠isInJoyZone判定)
+local JoyBase = Instance.new("Frame", ScreenGui)
+JoyBase.Size = UDim2.new(0, 130, 0, 130)
+JoyBase.Position = UDim2.new(0, 40, 1, -160)
+JoyBase.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+JoyBase.BackgroundTransparency = 0.6
+JoyBase.Active = false
+JoyBase.ZIndex = 100
+JoyBase.Visible = false
+local JoyBaseCorner = Instance.new("UICorner", JoyBase)
+JoyBaseCorner.CornerRadius = UDim.new(1, 0)  -- 圆形
+
+local JoyKnob = Instance.new("Frame", JoyBase)
+JoyKnob.Size = UDim2.new(0, 60, 0, 60)
+JoyKnob.Position = UDim2.new(0.5, -30, 0.5, -30)
+JoyKnob.BackgroundColor3 = Color3.fromRGB(80, 150, 255)
+JoyKnob.BackgroundTransparency = 0.2
+JoyKnob.ZIndex = 101
+local JoyKnobCorner = Instance.new("UICorner", JoyKnob)
+JoyKnobCorner.CornerRadius = UDim.new(1, 0)  -- 圆形
+
+local MAX_RADIUS = 50  -- 摇杆最大拖动半径
+
+-- 摇杆触摸跟踪
+local joyBasePos = Vector2.new()  -- 摇杆基准中心(屏幕坐标)
+
+local function updateJoystickFromTouch(touchPos)
+    local delta = touchPos - joyBasePos
+    local mag = delta.Magnitude
+    if mag > MAX_RADIUS then
+        delta = delta.Unit * MAX_RADIUS
+        mag = MAX_RADIUS
+    end
+    -- 摇杆头位置
+    JoyKnob.Position = UDim2.new(0.5, delta.X - 30, 0.5, delta.Y - 30)
+    -- 输出方向: 归一化到[-1,1]
+    local norm = (mag > 1 and delta / MAX_RADIUS or delta / MAX_RADIUS)
+    -- 上=后退, 下=前进 (按用户反馈取反)
+    -- 屏幕Y向上=朝后(对应Z), 屏幕Y向下=朝前
+    joystickVector = Vector3.new(norm.X, 0, norm.Y)
+end
+
+-- 摇杆模式开关 (由topBtn在MainFrame内创建, 见下方)
+local joyMode = false
+local JoyButton = nil
+local function setJoyMode(mode)
+    joyMode = mode
+    if JoyBase then JoyBase.Visible = false end  -- 底盘等触摸时才显示
+    if JoyButton then
+        JoyButton.Text = joyMode and "ON" or "摇"
+        JoyButton.BackgroundColor3 = joyMode and Color3.fromRGB(0, 150, 255) or Color3.fromRGB(70, 70, 70)
+    end
+    if not joyMode then
+        joystickActive = false
+        joystickVector = Vector3.new()
+    end
+end
+
+-- 触摸判定: 屏幕左下方区域 (摇杆在左下角, 触摸整个左下方都触发)
+local function isInJoyZone(pos)
+    if not joyMode then return false end
+    local vp = camera.ViewportSize
+    return pos.X <= vp.X * 0.5 and pos.Y >= vp.Y * 0.55
+end
+
+-- 触摸跟踪 (参考秋容VIP: 只跟随第一根手指, 第二根手指不打断)
+local joyDragInput = nil  -- 捕获启动摇杆的那根手指, 只跟随它
+
+UserInputService.InputBegan:Connect(function(input, processed)
+    if not joyMode then return end
+    if input.UserInputType == Enum.UserInputType.Touch then
+        if isInJoyZone(input.Position) and not joyDragInput then
+            joystickActive = true
+            joyDragInput = input  -- 捕获第一根手指
+            joyBasePos = input.Position
+            -- 摇杆底盘移到触摸起点(视觉反馈)
+            JoyBase.Position = UDim2.fromOffset(input.Position.X - 65, input.Position.Y - 65)
+            JoyBase.Visible = true
+            JoyKnob.Position = UDim2.new(0.5, -30, 0.5, -30)
+        end
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input, processed)
+    if not joyMode then return end
+    -- 只处理启动摇杆的那根手指
+    if joystickActive and joyDragInput and input == joyDragInput then
+        if input.UserInputType == Enum.UserInputType.Touch then
+            updateJoystickFromTouch(input.Position)
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input, processed)
+    if joyDragInput and input == joyDragInput then
+        joystickActive = false
+        joystickVector = Vector3.new()
+        joyDragInput = nil
+        if joyMode then JoyBase.Visible = false end
+    end
+end)
+
+-- --- 飞行核心 ---
+local isFlying = false
+local flySpeed = 35
+local animCache
+local ControlModule = require(lp.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
+local flightConnection = nil
+local lastUpdateTime = tick()
+
+local function startFly()
+    local char = lp.Character or lp.CharacterAdded:Wait()
+    local hrp = char:WaitForChild("HumanoidRootPart")
+    local hum = char:WaitForChild("Humanoid")
+    local animate = char:FindFirstChild("Animate")
+
+    if animate then animCache = animate; animate.Parent = nil end
+    hum.AutoRotate = false
+
+    if flightConnection then flightConnection:Disconnect() end
+
+    lastUpdateTime = tick()
+    flightConnection = RunService.Heartbeat:Connect(function()
+        if not isFlying or not char.Parent then
+            if flightConnection then flightConnection:Disconnect() end
+            return
+        end
+
+        local now = tick()
+        local dt = now - lastUpdateTime
+        lastUpdateTime = now
+
+        -- 移动向量: 优先摇杆, 否则用ControlModule
+        local moveVec
+        if joystickActive and joyMode then
+            moveVec = joystickVector
+        else
+            moveVec = ControlModule:GetMoveVector()
+        end
+
+        local camCF = camera.CFrame
+        -- 计算移动方向(包含垂直)
+        local moveDir = (camCF.LookVector * -moveVec.Z) + (camCF.RightVector * moveVec.X) + (Vector3.new(0, moveVec.Y, 0))
+
+        if moveVec.Magnitude > 0 then
+            local newPos = hrp.Position + moveDir.Unit * (flySpeed * dt)
+            hrp.CFrame = CFrame.new(newPos, newPos + camCF.LookVector)
+        else
+            hrp.CFrame = CFrame.lookAlong(hrp.Position, Vector3.new(camCF.LookVector.X, 0, camCF.LookVector.Z))
+        end
+
+        hrp.AssemblyLinearVelocity = Vector3.new()
+    end)
+end
+
+-- --- 交互 ---
+Toggle.MouseButton1Click:Connect(function()
+    isFlying = not isFlying
+    flySpeed = tonumber(SpeedInput.Text) or 35
+    Toggle.Text = isFlying and "已开启 - 运行中" or "纯坐标飞行: OFF"
+    TweenService:Create(Toggle, TweenInfo.new(0.3), {BackgroundColor3 = isFlying and Color3.fromRGB(0, 150, 255) or Color3.fromRGB(60, 60, 60)}):Play()
+    if isFlying then
+        startFly()
+    else
+        if flightConnection then
+            flightConnection:Disconnect()
+            flightConnection = nil
+        end
+        local char = lp.Character
+        if char then
+            local hum = char:FindFirstChild("Humanoid")
+            if hum then hum.AutoRotate = true end
+            local animate = char:FindFirstChild("Animate")
+            if animCache and not animate then
+                animCache.Parent = char
+                animCache = nil
+            end
+        end
+    end
+end)
+
+-- 退出与缩小按钮
+local function topBtn(t, x, c, f)
+    local b = Instance.new("TextButton", MainFrame)
+    b.Size = UDim2.new(0, 25, 0, 25); b.Position = UDim2.new(1, x, 0, 5); b.Text = t
+    b.BackgroundColor3 = c; b.TextColor3 = Color3.new(1, 1, 1); Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    b.MouseButton1Click:Connect(f)
+end
+
+topBtn("×", -30, Color3.fromRGB(150, 50, 50), function()
+    isFlying = false
+    if flightConnection then flightConnection:Disconnect() end
+    local char = lp.Character
+    if char then
+        local hum = char:FindFirstChild("Humanoid")
+        if hum then hum.AutoRotate = true end
+        local animate = char:FindFirstChild("Animate")
+        if animCache and not animate then
+            animCache.Parent = char
+        end
+    end
+    ScreenGui:Destroy()
+end)
+
+topBtn("-", -60, Color3.fromRGB(70, 70, 70), function()
+    local isCollapsed = MainFrame.Size.Y.Offset < 140
+    local targetH = isCollapsed and 140 or 35
+    TweenService:Create(MainFrame, TweenInfo.new(0.4, Enum.EasingStyle.Quart), {Size = UDim2.new(0, 180, 0, targetH)}):Play()
+    Toggle.Visible, SpeedInput.Visible = isCollapsed, isCollapsed
+end)
+
+-- 摇杆按钮: 主面板左上角, "官方"标题旁边 (正方形圆角)
+JoyButton = Instance.new("TextButton", MainFrame)
+JoyButton.Size = UDim2.new(0, 26, 0, 26)
+JoyButton.Position = UDim2.new(0, 6, 0, 2)
+JoyButton.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+JoyButton.BorderSizePixel = 0
+JoyButton.Text = "摇"
+JoyButton.TextColor3 = Color3.new(1, 1, 1)
+JoyButton.TextSize = 13
+local JoyBtnCorner = Instance.new("UICorner", JoyButton)
+JoyBtnCorner.CornerRadius = UDim.new(0, 6)  -- 圆角
+JoyButton.ZIndex = 50
+JoyButton.MouseButton1Click:Connect(function()
+    setJoyMode(not joyMode)
+end)
+
+-- 进场动画
+MainFrame.Size = UDim2.new(0, 0, 0, 0)
+MainFrame:TweenSize(UDim2.new(0, 180, 0, 140), "Out", "Back", 0.5)
